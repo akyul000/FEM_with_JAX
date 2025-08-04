@@ -1,0 +1,135 @@
+import numpy as onp
+import jax.numpy as np
+import matplotlib.pyplot as plt
+import jax
+jax.config.update("jax_enable_x64", True)
+
+
+class Quadrature:
+    def __init__(self, dim, p, f):
+        self.dim = dim
+        self.p = p
+        self.f = f
+
+
+    def rule(self):
+        if self.p<= 1:
+            self.n = 1
+            self.x = [0.]
+            self.w = [2.]
+        elif self.p<= 3:
+            self.n = 2
+            self.x = [1/np.sqrt(3), -1/np.sqrt(3)]
+            self.w = [1.,1.]
+        elif self.p<= 5:
+            self.n = 3
+            self.x = [np.sqrt(0.6), 0, -np.sqrt(0.6)]
+            self.w = [5/9, 8/9, 5/9]
+
+
+
+    def integrate(self):
+        self.rule()
+        gauss_quadrature = 0
+
+        if self.dim == 1:
+            for i in range(self.n): 
+                gauss_quadrature += self.w[i]*self.f(self.x[i])
+   
+
+
+        elif self.dim == 2:
+            for i in range(self.n):
+                for j in range(self.n):
+                    gauss_quadrature += self.w[i]* self.w[j]*self.f(self.x[i],self.x[j])
+        
+
+        else: 
+            raise NotImplementedError(f"Integration for dim={self.dim} not implemented.")
+        return gauss_quadrature
+        
+def shape_functions_bilinear(xi, eta):
+    N1 = 1 / 4 * (1 - xi) * (1 - eta)
+    N2 = 1 / 4 * (1 + xi) * (1 - eta)
+    N3 = 1 / 4 * (1 + xi) * (1 + eta)
+    N4 = 1 / 4 * (1 - xi) * (1 + eta)
+    return np.array([N1, N2, N3, N4])
+
+def linear_shape_functions_1D(xi):
+    N1 = -1 / 2 * (xi - 1)
+    N2 = 1 / 2 * (xi + 1)
+    return np.array([N1, N2])
+
+
+
+
+
+shape_fn_grads = jax.jacobian(linear_shape_functions_1D)  #
+
+
+
+def integrand_modularized(xi, x):
+    grads = shape_fn_grads(xi).reshape(-1,1)
+    shape_function_vals = linear_shape_functions_1D(xi).reshape(-1,1)
+    J =  x.T @ grads
+    physical_shape_grads = grads @ np.linalg.inv(J)
+    dN_dx = physical_shape_grads[:, 0].reshape(-1, 1) 
+    k = 0.1 * (x.T @ shape_function_vals) ** 2 + 0.5
+    integrand = 1 * (dN_dx @ dN_dx.T) * np.linalg.det(J)
+    return integrand
+
+
+xi = 0.25
+x = np.array([0,0.1]).reshape(-1,1)
+
+print(integrand_modularized(xi,x)
+)
+def make_integrand_wrapper(T, points_batch):
+    """
+    Returns a function f(xi, eta) that applies over all elements in the batch.
+    X_batch, Y_batch: shape (n_elem, 4, 1)
+    """
+    def f(xi):
+        return jax.vmap(lambda physical_points: integrand_modularized(xi,  physical_points))(points_batch)
+    return f  
+
+def vmapped_integrand(points_batch, T):
+    f = make_integrand_wrapper(T)
+    
+    def f_single(xi):
+        return jax.vmap(lambda physical_points: f(xi, physical_points))(points_batch)
+    
+    return f_single
+
+
+######################################### Meshing #########################################
+
+## TODO: Test this
+dim = 2
+p = 1    
+T = 2
+NoE = 10
+NoN = NoE + 1
+
+x_s = np.linspace(0,10,NoN)
+
+elements_x = []
+for i in range(NoE):
+    x_left = x_s[i]
+    x_right = x_s[i+1]
+    x_el = np.array([x_left,x_right])
+    elements_x.append(x_el)
+
+elements_x = np.array(elements_x).reshape(NoE, 2, 1)
+
+
+# Build vmapped integrand function (xi, eta) → (batch_size,)
+f = make_integrand_wrapper(T, elements_x)
+Q = Quadrature(dim=1, p=1, f=f)
+ke_all = Q.integrate()  
+
+print(ke_all)
+print()
+
+
+
