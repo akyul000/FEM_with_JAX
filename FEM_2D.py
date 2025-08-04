@@ -106,9 +106,15 @@ dim = 2
 p = 1    
 T = 2
 
-Nx = 80
-Ny = 60
+
+
+
+
+Nx = 24
+Ny = 6
 NoE = Nx * Ny
+
+
 
 NpE = 2
 NoN_x = Nx + 1
@@ -119,6 +125,8 @@ element_nodal_coordinates = {}
 element_nodal_numbers = {}
 element_nodal_coords_batched = []
 element_nodal_numbers_list = []
+
+
 # 2D parameter grids
 x_grid = np.linspace(0, 1, NoN_x)
 y_grid = np.linspace(0, 1, NoN_y)
@@ -158,6 +166,13 @@ def find_boundary_nodes(nodes, x_val=1.0, tol=1e-8):
     mask = np.abs(nodes[:, 0] - x_val) < tol
     return np.where(mask)[0]  # Ind
 
+# Set up to Dirichlet BCs
+left_bc = 0
+right_bc = 0.25
+all_nodes = np.arange(0,NoN,1)
+dirichlet_bounds = np.array([0,1])
+inds_boundary = np.sort(np.array([find_boundary_nodes(points, x_val=i) for i in dirichlet_bounds]).reshape(-1))
+free_inds = np.delete(all_nodes, inds_boundary)
 ##################################################################################
 def assemble_global_stiffness_loop(NoN,NoE,element_nodal_coordinates):
     K = np.zeros((NoN,NoN))
@@ -192,17 +207,130 @@ def assemble_global_stiffness(ke_all, element_nodal_numbers, NoN):
     K = K.at[(rows, cols)].add(values)
     return K
 
+from scipy.sparse import coo_matrix
+
+def assemble_sparse_stiffness_matrix(ke_all, element_nodal_numbers_ar, NoN):
+    """
+    Assemble the global stiffness matrix in sparse COO format.
+
+    Args:
+        ke_all: (n_elements, 4, 4) stiffness matrices
+        element_nodal_numbers_ar: (n_elements, 4) global node indices for each element
+        NoN: number of nodes
+
+    Returns:
+        scipy.sparse.coo_matrix
+    """
+    n_elements = ke_all.shape[0]
+
+    # Create index arrays for local-to-global mapping
+    I_local = np.repeat(element_nodal_numbers_ar[:, :, None], 4, axis=2)  # (n_elem, 4, 4)
+    J_local = np.repeat(element_nodal_numbers_ar[:, None, :], 4, axis=1)  # (n_elem, 4, 4)
+
+    I_all = I_local.reshape(-1)
+    J_all = J_local.reshape(-1)
+    V_all = ke_all.reshape(-1)
+
+    # Convert to numpy arrays (JAX arrays can't be used in SciPy)
+    I_all_np = onp.array(I_all)
+    J_all_np = onp.array(J_all)
+    V_all_np = onp.array(V_all)
+
+    K_sparse = coo_matrix((V_all_np, (I_all_np, J_all_np)), shape=(NoN, NoN))
+    return K_sparse
+
+
 # Build vmapped integrand function (xi, eta) → (batch_size,)
 f = make_integrand_wrapper(T, element_nodal_coords_batched)
 Q = Quadrature(dim=2, p=2, f=f)
 ke_all = Q.integrate()  
 
+K_sparse = assemble_sparse_stiffness_matrix(ke_all, element_nodal_numbers_ar, NoN)
 
 import time
 # Assemble global stiffness matrix using vmap
 start_v = time.time()
 K_vmapped = assemble_global_stiffness(ke_all, element_nodal_numbers, NoN)
 end_v = time.time()
+
+# kpu = K_vmapped[np.ix_(free_inds, free_inds)]
+# kpp = K_vmapped[np.ix_(free_inds, inds_boundary)]
+
+# fp = np.zeros_like(inds_boundary)
+
+# up = np.array([0,0.25,0,0.25])
+
+# u_ins = onp.linalg.solve(kpu, fp-kpp@up)
+
+# u_comb = onp.zeros(8)
+
+# # for i in all_nodes:
+# #     for free in free_inds:
+# #         if i == free:
+# #             u_comb[i] = 
+# u_comb[0] = 0
+# u_comb[1] = u_ins[0]
+# u_comb[2] = u_ins[1]
+# u_comb[3] = 0.25
+# u_comb[4] = 0
+# u_comb[5] = u_ins[2]
+# u_comb[6] = u_ins[3]
+# u_comb[7] = 0.25
+
+def solve_dirichlet_system(K, free_inds, inds_boundary, up, f=None):
+    """
+    Solve Ku=f under Dirichlet BCs.
+
+    Args:
+        K: (NoN, NoN) global stiffness matrix
+        free_inds: indices of free DOFs
+        inds_boundary: indices of Dirichlet DOFs
+        up: prescribed values at Dirichlet DOFs
+        f: (NoN,) RHS vector. If None, assumed zero.
+
+    Returns:
+        u_comb: full solution vector (NoN,)
+    """
+    NoN = K.shape[0]
+    if f is None:
+        f = np.zeros(NoN)
+    
+    # Extract submatrices
+    Kuu = K[np.ix_(free_inds, free_inds)]
+    Kup = K[np.ix_(free_inds, inds_boundary)]
+
+    # Extract RHS
+    fu = f[free_inds]
+
+    # Solve system
+    rhs = fu - Kup @ up
+    uu = onp.linalg.solve(Kuu, rhs)
+
+    # Combine solution
+    u_comb = np.zeros(NoN)
+    u_comb = u_comb.at[free_inds].set(uu)
+    u_comb = u_comb.at[inds_boundary].set(up)
+    return u_comb
+
+def get_boundary_node_indices(points, x_vals, tol=1e-8):
+    """
+    Find indices of nodes that lie on specified x-coordinate values.
+    """
+    boundary_inds = [np.where(np.abs(points[:, 0] - val) < tol)[0] for val in x_vals]
+    return np.sort(np.concatenate(boundary_inds))
+
+
+dirichlet_values = {0.0: 0.0, 1.0: 0.25}
+inds_boundary = get_boundary_node_indices(points, list(dirichlet_values.keys()))
+free_inds = np.setdiff1d(np.arange(NoN), inds_boundary)
+up = np.array([dirichlet_values[points[i, 0].item()] for i in inds_boundary])
+
+u_comb = solve_dirichlet_system(K_vmapped, free_inds, inds_boundary, up)
+
+
+
+
+# print(f"solution is {u_ins}")
 
 # start_l = time.time()
 # K = assemble_global_stiffness_loop(NoN, NoE, element_nodal_coordinates)
@@ -216,4 +344,20 @@ print(f"Time for the vmapped assembly is {end_v-start_v}")
 
 plt.figure()
 plt.spy(K_vmapped, markersize=2)
+plt.show()
+
+
+# print(K_sparse)
+print(u_comb)
+
+
+
+
+
+deformed_points = points[:,0] + u_comb
+
+plt.figure()
+plt.plot(points[:,0],points[:,1],"ro")
+plt.plot(deformed_points,points[:,1],"go")
+
 plt.show()
