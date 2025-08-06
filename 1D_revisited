@@ -93,13 +93,13 @@ def make_integrand_wrapper(T, points_batch):
         return jax.vmap(lambda physical_points: integrand_modularized(xi,  physical_points))(points_batch)
     return f  
 
-def vmapped_integrand(points_batch, T):
-    f = make_integrand_wrapper(T)
+# def vmapped_integrand(points_batch, T):
+#     f = make_integrand_wrapper(T)
     
-    def f_single(xi):
-        return jax.vmap(lambda physical_points: f(xi, physical_points))(points_batch)
+#     def f_single(xi):
+#         return jax.vmap(lambda physical_points: f(xi, physical_points))(points_batch)
     
-    return f_single
+#     return f_single
 
 
 ######################################### Meshing #########################################
