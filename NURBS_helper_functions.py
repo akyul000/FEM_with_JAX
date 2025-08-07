@@ -862,3 +862,340 @@ def get_vtu_file_bspline_evaluated_saved_hex(Nx,Ny,Nz,knot_xi,knot_eta,knot_zeta
 
     mesh.write(output_name)
     print(f"VTU mesh solid geometry saved as '{output_name}'")
+
+
+def evaluate_bspline_volume(knot_xi, knot_eta, knot_zeta, control_points, xi, eta, zeta, p, q, r,**kwargs):
+    """
+    Evaluates a B-spline volume at the given parametric coordinates (xi, eta, zeta).
+    Parameters:
+        knot_xi (array-like): Knot vector in the xi direction.
+        knot_eta (array-like): Knot vector in the eta direction.
+        knot_zeta (array-like): Knot vector in the zeta direction.
+        control_points (ndarray): Array of control points with shape (n_xi, n_eta, n_zeta, 3).
+        xi (float): Parametric coordinate in the xi direction.
+        eta (float): Parametric coordinate in the eta direction.
+        zeta (float): Parametric coordinate in the zeta direction.
+        p (int): Degree of the B-spline in the xi direction.
+        q (int): Degree of the B-spline in the eta direction.
+        r (int): Degree of the B-spline in the zeta direction.
+        **kwargs: Additional arrays of the same shape as control_points to be evaluated at (xi, eta, zeta).
+    Returns:
+        tuple:
+            - point (ndarray): The evaluated point on the B-spline volume (shape: (3,)).
+            - points_additional (ndarray): Evaluated values for each additional array passed via kwargs (shape: (len(kwargs), 3)).
+    """
+    span_xi = find_span(knot_xi, p, xi)
+    span_eta = find_span(knot_eta, q, eta)
+    span_zeta = find_span(knot_zeta, r, zeta)
+    
+    basis_xi = bspline_basis(knot_xi, p, span_xi, xi)
+    basis_eta = bspline_basis(knot_eta, q, span_eta, eta)
+    basis_zeta = bspline_basis(knot_zeta, r, span_zeta, zeta)
+    
+    cp_idx_xi = get_control_point_indices(span_xi, p)
+    cp_idx_eta = get_control_point_indices(span_eta, q)
+    cp_idx_zeta = get_control_point_indices(span_zeta, r)
+    
+    point = onp.zeros(3)
+    points_additional = onp.zeros((len(kwargs), 3))
+
+    for a in range(p + 1):
+        for b in range(q + 1):
+            for c in range(r + 1):
+                weight = basis_xi[a] * basis_eta[b] * basis_zeta[c]
+                point += weight * control_points[cp_idx_xi[a], cp_idx_eta[b], cp_idx_zeta[c]]
+                for idx, key in enumerate(kwargs):
+                    points_additional[idx] += weight * kwargs[key][cp_idx_xi[a], cp_idx_eta[b], cp_idx_zeta[c]]
+    return point, points_additional
+
+def get_u_grads_NURBS(knot_xi, knot_eta, knot_zeta, control_points, cp_sol, xi, eta, zeta, p, q, r):
+    """
+    Computes the value and physical gradient of a vector field defined by NURBS basis functions at a given parametric point.
+    Parameters
+    ----------
+    knot_xi : array_like
+        Knot vector in the xi direction.
+    knot_eta : array_like
+        Knot vector in the eta direction.
+    knot_zeta : array_like
+        Knot vector in the zeta direction.
+    control_points : ndarray
+        Array of control points defining the geometry, shape (n_xi, n_eta, n_zeta, 3).
+    cp_sol : ndarray
+        Array of solution values (e.g., displacement or field values) at control points, shape (n_xi, n_eta, n_zeta, 3).
+    xi : float
+        Parametric coordinate in the xi direction.
+    eta : float
+        Parametric coordinate in the eta direction.
+    zeta : float
+        Parametric coordinate in the zeta direction.
+    p : int
+        Degree of the NURBS basis in the xi direction.
+    q : int
+        Degree of the NURBS basis in the eta direction.
+    r : int
+        Degree of the NURBS basis in the zeta direction.
+    Returns
+    -------
+    point : ndarray
+        The value of the vector field at the given parametric point, shape (3,).
+    grad_u_physical : ndarray
+        The physical gradient of the vector field at the given parametric point, shape (3, 3).
+    Notes
+    -----
+    - The function computes the parametric derivatives of the NURBS basis functions and maps them to the physical domain using the Jacobian of the geometry mapping.
+    - The returned gradient is with respect to the physical coordinates.
+    """
+    # Find spans
+    span_xi = find_span(knot_xi, p, xi)
+    span_eta = find_span(knot_eta, q, eta)
+    span_zeta = find_span(knot_zeta, r, zeta)
+    
+    # Basis functions and derivatives
+    basis_xi, dbasis_xi = bspline_basis_and_derivatives(knot_xi, p, span_xi, xi)
+    basis_eta, dbasis_eta = bspline_basis_and_derivatives(knot_eta, q, span_eta, eta)
+    basis_zeta, dbasis_zeta = bspline_basis_and_derivatives(knot_zeta, r, span_zeta, zeta)
+    
+    # Control point index ranges
+    cp_idx_xi = get_control_point_indices(span_xi, p)
+    cp_idx_eta = get_control_point_indices(span_eta, q)
+    cp_idx_zeta = get_control_point_indices(span_zeta, r)
+    
+    # Initialize output
+    point = onp.zeros(3)
+    dx_dxi = onp.zeros(3)
+    dx_deta = onp.zeros(3)
+    dx_dzeta = onp.zeros(3)
+
+    # Parametric gradient of vector field: shape (3, 3)
+    grad_u_param = onp.zeros((3, 3))
+    
+    for a in range(p + 1):
+        for b in range(q + 1):
+            for c in range(r + 1):
+                # Geometry control point
+                cp = control_points[cp_idx_xi[a], cp_idx_eta[b], cp_idx_zeta[c]]
+                sol = cp_sol[cp_idx_xi[a], cp_idx_eta[b], cp_idx_zeta[c]] # u 
+                # Basis value and directional derivatives
+                R = basis_xi[a] * basis_eta[b] * basis_zeta[c]
+                dR_dxi = dbasis_xi[a] * basis_eta[b] * basis_zeta[c]
+                dR_deta = basis_xi[a] * dbasis_eta[b] * basis_zeta[c]
+                dR_dzeta = basis_xi[a] * basis_eta[b] * dbasis_zeta[c]
+
+
+                grad_u_param[:, 0] += dR_dxi * sol
+                grad_u_param[:, 1] += dR_deta * sol
+                grad_u_param[:, 2] += dR_dzeta * sol
+
+                # Compute mapping
+                point += R * sol
+                dx_dxi += dR_dxi * cp
+                dx_deta += dR_deta * cp
+                dx_dzeta += dR_dzeta * cp
+    
+    # Construct the Jacobian matrix
+    J = onp.column_stack((dx_dxi, dx_deta, dx_dzeta))  # shape: (3, 3)
+    grad_u_physical = grad_u_param @ onp.linalg.inv(J)
+
+    return point, grad_u_physical
+
+
+def evaluate_geometry(knot_xi, knot_eta, knot_zeta, xi_vals, eta_vals, zeta_vals, p, q, r, cps, **kwargs):
+    """
+    Evaluates the geometry and additional fields at specified parametric points within a B-spline volume.
+    Parameters
+    ----------
+    knot_xi : array-like
+        Knot vector in the xi direction.
+    knot_eta : array-like
+        Knot vector in the eta direction.
+    knot_zeta : array-like
+        Knot vector in the zeta direction.
+    xi_vals : array-like
+        List or array of xi parametric coordinates to evaluate.
+    eta_vals : array-like
+        List or array of eta parametric coordinates to evaluate.
+    zeta_vals : array-like
+        List or array of zeta parametric coordinates to evaluate.
+    p : int
+        Degree of the B-spline in the xi direction.
+    q : int
+        Degree of the B-spline in the eta direction.
+    r : int
+        Degree of the B-spline in the zeta direction.
+    cps : array-like
+        Control points of the B-spline volume.
+    **kwargs : dict, optional
+        Additional field data to be evaluated and returned. Each key should correspond to a field name.
+    Returns
+    -------
+    point_indices : dict
+        Mapping from (i, j, k) indices in the parametric grid to global point indices.
+    points : numpy.ndarray
+        Array of evaluated geometry points at the specified parametric locations.
+    additional_field_data : dict
+        Dictionary mapping each additional field name (from kwargs) to an array of evaluated field values at the specified points.
+    Notes
+    -----
+    This function relies on `evaluate_bspline_volume` to compute the geometry and additional fields at each parametric location.
+    """
+
+    # Prepare arrays
+    points = []
+    point_indices = {}  # Maps (i,j,k) to global index
+    index = 0
+    additional_field_data = {key: [] for key in kwargs}
+    for i, xi in enumerate(xi_vals):
+        for j, eta in enumerate(eta_vals):
+            for k, zeta in enumerate(zeta_vals):
+                # Geometry position
+                point, additional_fields = evaluate_bspline_volume(knot_xi=knot_xi,
+                                                    knot_eta=knot_eta,
+                                                    knot_zeta=knot_zeta,
+                                                    control_points=cps,
+                                                    xi=xi, eta=eta, zeta=zeta,
+                                                    p=p, q=q, r=r, **kwargs)
+
+
+             
+                points.append(point)
+                point_indices[(i, j, k)] = index
+                index += 1
+                for idx, key in enumerate(kwargs):
+                    additional_field_data[key].append(additional_fields[idx])
+    points = onp.array(points)
+    for key in additional_field_data:
+        additional_field_data[key] = onp.array(additional_field_data[key])
+    return point_indices, points, additional_field_data
+
+def evaluate_physical_quantities(knot_xi, knot_eta, knot_zeta, xi_vals, eta_vals, zeta_vals, p, q, r, sol_cp_reshaped, undeformed_cp_reshaped, **kwargs):
+    """
+    Evaluates physical quantities at specified parametric points within a NURBS or B-spline volume.
+    This function computes the deformed and undeformed positions, displacement gradients, deformation gradients,
+    and any additional fields at a grid of parametric points defined by xi_vals, eta_vals, and zeta_vals.
+    It uses the provided knot vectors, control points, and polynomial degrees to evaluate the geometry and solution fields.
+    Parameters
+    ----------
+    knot_xi : array_like
+        Knot vector in the xi direction.
+    knot_eta : array_like
+        Knot vector in the eta direction.
+    knot_zeta : array_like
+        Knot vector in the zeta direction.
+    xi_vals : array_like
+        Parametric coordinates in the xi direction at which to evaluate quantities.
+    eta_vals : array_like
+        Parametric coordinates in the eta direction at which to evaluate quantities.
+    zeta_vals : array_like
+        Parametric coordinates in the zeta direction at which to evaluate quantities.
+    p : int
+        Degree of the basis functions in the xi direction.
+    q : int
+        Degree of the basis functions in the eta direction.
+    r : int
+        Degree of the basis functions in the zeta direction.
+    sol_cp_reshaped : array_like
+        Solution control points (typically deformed positions or displacements), reshaped for evaluation.
+    undeformed_cp_reshaped : array_like
+        Undeformed geometry control points, reshaped for evaluation.
+    **kwargs : dict
+        Additional fields to be evaluated and returned. Each key should correspond to a field name.
+    Returns
+    -------
+    u_grads : numpy.ndarray
+        Array of displacement gradient tensors at each evaluation point.
+    F : numpy.ndarray
+        Array of deformation gradient tensors at each evaluation point.
+    point_indices : dict
+        Mapping from (i, j, k) grid indices to global point indices.
+    points_sol : numpy.ndarray
+        Array of deformed (solution) positions at each evaluation point.
+    points_undeformed : numpy.ndarray
+        Array of undeformed positions at each evaluation point.
+    additional_field_data : dict
+        Dictionary mapping each additional field name to an array of its evaluated values at each point.
+    """
+
+    # Prepare arrays
+    points_sol = []
+    points_undeformed = []
+    point_indices = {}  # Maps (i,j,k) to global index
+    index = 0
+    u_grads = []
+    F = []
+    additional_field_data = {key: [] for key in kwargs}
+    for i, xi in enumerate(xi_vals):
+        for j, eta in enumerate(eta_vals):
+            for k, zeta in enumerate(zeta_vals):
+                # Geometry position
+                point_undeformed, additional_fields = evaluate_bspline_volume(knot_xi=knot_xi,
+                                                    knot_eta=knot_eta,
+                                                    knot_zeta=knot_zeta,
+                                                    control_points=undeformed_cp_reshaped,
+                                                    xi=xi, eta=eta, zeta=zeta,
+                                                    p=p, q=q, r=r, **kwargs)
+                # Obtain physical value of control point displacement and u_grads
+                point_deformed, u_grad = get_u_grads_NURBS(knot_xi=knot_xi,
+                                                        knot_eta=knot_eta,
+                                                        knot_zeta=knot_zeta,cp_sol=sol_cp_reshaped,control_points=undeformed_cp_reshaped,xi=xi, eta=eta, zeta=zeta,
+                                                        p=p, q=q, r=r)
+                F_val = u_grad + onp.eye(3)
+                u_grads.append(u_grad)
+                F.append(F_val)
+                points_sol.append(point_deformed)
+                points_undeformed.append(point_undeformed)
+                point_indices[(i, j, k)] = index
+                index += 1
+                for idx, key in enumerate(kwargs):
+                    additional_field_data[key].append(additional_fields[idx])
+
+    u_grads = onp.array(u_grads)
+    F = onp.array(F)
+    points_sol = onp.array(points_sol)
+    points_undeformed = onp.array(points_undeformed)
+    for key in additional_field_data:
+        additional_field_data[key] = onp.array(additional_field_data[key])
+    return u_grads, F, point_indices, points_sol, points_undeformed, additional_field_data
+
+
+# def evaluate_physical_quantities_vmapped(knot_xi, knot_eta, knot_zeta, Nx, Ny, Nz, p, q, r, sol_cp_reshaped, undeformed_cp_reshaped, compute_greville = False):
+#     if not compute_greville:
+#         xi_vals = onp.linspace(0, 1, Nx)
+#         eta_vals = onp.linspace(0, 1, Ny)
+#         zeta_vals = onp.linspace(0, 1, Nz)
+#     else: 
+#         xi_vals = compute_greville_abscissae(knots=knot_xi, degree=p)
+#         eta_vals = compute_greville_abscissae(knots=knot_eta, degree=q)
+#         zeta_vals = compute_greville_abscissae(knots=knot_zeta, degree=r)
+
+#     parametric_points = np.array(list(product(xi_vals, eta_vals, zeta_vals)))  # shape (N_points, 3)
+
+#     def eval_undeformed(point):
+#         xi, eta, zeta = point
+#         return evaluate_bspline_volume(knot_xi=knot_xi,
+#                                         knot_eta=knot_eta,
+#                                         knot_zeta=knot_zeta,
+#                                         control_points=undeformed_cp_reshaped,
+#                                         xi=xi, eta=eta, zeta=zeta,
+#                                         p=p, q=q, r=r)
+
+#     def eval_deformed_and_grad(point):
+#         xi, eta, zeta = point
+#         return get_u_grads_NURBS(knot_xi=knot_xi,
+#                                 knot_eta=knot_eta,
+#                                 knot_zeta=knot_zeta,cp_sol=sol_cp_reshaped,control_points=undeformed_cp_reshaped,xi=xi, eta=eta, zeta=zeta,
+#                                 p=p, q=q, r=r)
+
+
+
+#     v_eval_undeformed = jax.vmap(eval_undeformed)
+#     v_eval_deformed_and_grad = jax.vmap(eval_deformed_and_grad)
+
+#     # Apply
+#     import time
+#     st_time = time.time()
+#     points_undeformed = v_eval_undeformed(parametric_points)  # (N, 3)
+#     end_time = time.time()
+#     time_first = end_time - st_time
+#     print(f'Time is {time_first}')
+#     points_sol, u_grads = v_eval_deformed_and_grad(parametric_points)  # (N, 3), (N, 3, 3)

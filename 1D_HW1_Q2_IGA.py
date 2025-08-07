@@ -18,7 +18,7 @@ def T_exact(x):
 
 # Parameters
 p = 2
-n_cps = 24
+n_cps = 6
 L = 10.0
 F_N = -5
 num_xi_array_for_post_processing = 50
@@ -61,7 +61,7 @@ def integrand_wrapper(knot_vector, p, cps):
     return f
 f_v = integrand_wrapper(knot_vector, p, cps)
 
-
+# Calculate element stiffness matrices and assemble the global system
 # Loop over knot spans
 cps_batched = []
 for i in range(num_elem):
@@ -75,18 +75,19 @@ for i in range(num_elem):
     idx_j, idx_k = np.meshgrid(cps_idx, cps_idx, indexing='ij')
     K = K.at[idx_j, idx_k].add(ke)
 
+#################### Apply BCs and Solve ####################
 
 # Neumann BC at x = 0 (flux q = -5)
 F = F.at[0].set(F_N)
-
 # Dirichlet BC at x = L (T = 0)
 K_reduced = K[:-1, :-1]
 F_reduced = F[:-1]
-
 u_reduced = np.linalg.solve(K_reduced, F_reduced)
 u = np.zeros((n_basis, 1))  
 u = u.at[:-1].set(u_reduced)
 
+
+#################### Post-Process ####################
 # Post-process for visualization
 x_vals = []
 u_vals = []
