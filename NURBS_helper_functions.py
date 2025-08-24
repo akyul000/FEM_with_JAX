@@ -217,6 +217,170 @@ def get_control_point_indices(span, p):
 
     return onp.arange(span - p, span + 1)
 
+def knot_insertion(knot, p, Pw, u):
+    """
+    Inserts a knot 'u' into a B-spline curve defined by control points Pw and knot vector knot.
+
+    Parameters
+    ----------
+    knot : array_like
+        The knot vector.
+    p : int
+        The degree of the B-spline basis functions.
+    Pw : ndarray of shape (n+1, dim)
+        Array of control points (can be 2D or 3D).
+    u : float
+        The knot value to insert.
+
+    Returns
+    -------
+    new_knot : ndarray
+        Updated knot vector after insertion.
+    new_Pw : ndarray
+        Updated control points after insertion.
+
+    Notes
+    -----
+    - This inserts the knot ONCE.
+    - Works with open uniform and non-uniform knot vectors.
+    - Pw can be weighted or unweighted control points.
+    """
+    knot = list(knot)
+    Pw = onp.array(Pw)
+    n = len(Pw) - 1
+
+    # Find span and multiplicity
+    k = find_span(knot, p, u)
+    s = knot.count(u)
+
+    if s >= p:  # cannot insert if max multiplicity reached
+        return onp.array(knot), Pw
+
+    # Number of new control points
+    Qw = onp.zeros((len(Pw) + 1, Pw.shape[1]))
+    new_knot = [0.0] * (len(knot) + 1)
+
+    # Copy unaffected control points
+    for i in range(0, k - p + 1):
+        Qw[i] = Pw[i]
+    for i in range(k - s, n + 1):
+        Qw[i + 1] = Pw[i]
+
+    # Compute affected control points
+    for i in range(k - p + 1, k - s + 1):
+        alpha = (u - knot[i]) / (knot[i + p - s + 1] - knot[i])
+        Qw[i] = alpha * Pw[i] + (1.0 - alpha) * Pw[i - 1]
+
+    # Copy unaffected knots
+    for i in range(0, k + 1):
+        new_knot[i] = knot[i]
+    new_knot[k + 1] = u
+    for i in range(k + 2, len(new_knot)):
+        new_knot[i] = knot[i - 1]
+
+    return onp.array(new_knot), Qw
+
+def insert_knot_u(knot_u, control_points, p, xi):
+    n_u, n_v, dim = control_points.shape
+    new_control_points_list = []
+    new_knot_u = None
+
+    # Insert knot xi in u-direction for each fixed v
+    for j in range(n_v):
+        Pw = control_points[:, j, :]  # (n_u, dim)
+        new_knot_u, new_Pw = knot_insertion(knot_u, p, Pw, xi)
+        new_control_points_list.append(new_Pw)
+
+    # Stack results along u-direction
+    new_control_points = onp.stack(new_control_points_list, axis=1)  # shape (n_u+1, n_v, dim)
+    return new_knot_u, new_control_points
+
+
+def insert_knot_v(knot_v, control_points, q, eta):
+    n_u, n_v, dim = control_points.shape
+    new_control_points_list = []
+    new_knot_v = None
+
+    # Insert knot eta in v-direction for each fixed u
+    for i in range(n_u):
+        Pw = control_points[i, :, :]  # (n_v, dim)
+        new_knot_v, new_Pw = knot_insertion(knot_v, q, Pw, eta)
+        new_control_points_list.append(new_Pw)
+
+    # Stack results along v-direction
+    new_control_points = onp.stack(new_control_points_list, axis=0)  # shape (n_u, n_v+1, dim)
+    return new_knot_v, new_control_points
+
+
+
+# def knot_insertion(U, P, p, u_bar):
+#     """
+#     Insert knot u_bar into knot vector U for B-spline curve with degree p and control points P.
+    
+#     Parameters
+#     ----------
+#     U : array_like, shape (m+1,)
+#         Current knot vector (non-decreasing).
+#     P : array_like, shape (n+1, dim)
+#         Current control points.
+#     p : int
+#         Degree of B-spline.
+#     u_bar : float
+#         Knot value to insert.
+    
+#     Returns
+#     -------
+#     U_new : ndarray
+#         New knot vector with u_bar inserted.
+#     P_new : ndarray
+#         New control points after knot insertion.
+#     """
+
+    
+#     U = onp.asarray(U)
+#     P = onp.asarray(P)
+#     n = len(P) - 1
+#     m = len(U) - 1
+    
+#     # Find span to insert u_bar
+#     k = find_span(U, p, u_bar)
+    
+#     # Count current multiplicity of u_bar
+#     multiplicity = onp.sum(onp.isclose(U, u_bar))
+    
+#     # Max multiplicity is p, check if insertion possible
+#     if multiplicity == p:
+#         raise ValueError("Knot multiplicity already maximum (p). Cannot insert further.")
+    
+#     r = 1  # number of knots to insert - here inserting one knot
+    
+#     # New knot vector length: m + r + 1
+#     U_new = onp.zeros(m + r + 1)
+    
+#     # Copy knots before insertion
+#     U_new[:k+1] = U[:k+1]
+#     # Insert new knot(s)
+#     U_new[k+1:k+1+r] = u_bar
+#     # Copy remaining knots
+#     U_new[k+1+r:] = U[k+1:]
+    
+#     # New control points length: n + r + 1
+#     # dim = 1
+#     P_new = onp.zeros(n + r + 1)
+    
+#     # Copy control points before affected range
+#     P_new[:k - p + 1] = P[:k - p + 1]
+#     # Copy control points after affected range
+#     P_new[k+1+r:] = P[k - multiplicity + 1:]
+    
+#     # Compute new control points
+#     for i in range(k - p + 1, k - multiplicity + 1):
+#         alpha = (u_bar - U[i]) / (U[i + p] - U[i])
+#         P_new[i] = alpha * P[i] + (1.0 - alpha) * P[i - 1]
+    
+#     return U_new, P_new
+
+
 def evaluate_bspline_surface(knot_xi, knot_eta, control_points, xi, eta, p, q, **kwargs):
     """
     Evaluates a B-spline surface at the given parametric coordinates (xi, eta).
